@@ -1,5 +1,6 @@
 #include <mex.h>
 #include <iostream>
+#include <time.h>
 #include "k-means.h"
 using namespace std;
 
@@ -7,7 +8,7 @@ using namespace std;
 
 enum INPUTARRAY
 {
-	IMAGE, MASK, CENTERS, PATCHSIZE, MODELTYPE, NUMBEROFBINS, GRADIENTDIRECTION
+	IMAGE, MASK, PATCHSIZE, MODELTYPE, NUMBEROFBINS, GRADIENTDIRECTION
 };
 
 template <typename T>
@@ -25,8 +26,6 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 		channels = 3;
 	}
 	double *masks = (double *)mxGetPr(prhs[MASK]);
-	double *centers = (double *)mxGetPr(prhs[CENTERS]);
-	int regionNumbers = mxGetDimensions(prhs[CENTERS])[0];
 	int patch_size = mxGetScalar(prhs[PATCHSIZE]);
 
 	int model_name_length = mxGetN(prhs[MODELTYPE])*sizeof(mxChar) + 1;
@@ -35,7 +34,7 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 	int number_of_bins=0;
 	double *direction=NULL;
 	number_of_bins = mxGetScalar(prhs[NUMBEROFBINS]);
-	printf("the number of bins is %d\n", number_of_bins);
+	//printf("the number of bins is %d\n", number_of_bins);
 	direction = mxGetPr(prhs[GRADIENTDIRECTION]);
 	int pixel_label;
 
@@ -47,25 +46,34 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 		min_label = (min_label > *(masks + i )) ? *(masks + i ) : min_label;
 	}
 
+	int region_numbers = max_label - min_label + 1;
 	if ( !strcmp(model_name, "gray") || !strcmp(model_name, "magnitude") ) {
-		plhs[0] = mxCreateDoubleMatrix(patch_size*patch_size, max_label - min_label + 1 , mxREAL);
+		plhs[0] = mxCreateDoubleMatrix(patch_size*patch_size, region_numbers , mxREAL);
 	}else if ( !strcmp(model_name, "append") ) {
-		plhs[0] = mxCreateDoubleMatrix(patch_size*patch_size+number_of_bins, max_label - min_label + 1 , mxREAL);
+		plhs[0] = mxCreateDoubleMatrix(patch_size*patch_size+number_of_bins, region_numbers , mxREAL);
 	}else if ( !strcmp(model_name, "RGB") || !strcmp(model_name, "rgb") ) {
-		plhs[0] = mxCreateDoubleMatrix(patch_size*patch_size*3, max_label - min_label + 1 , mxREAL);
+		plhs[0] = mxCreateDoubleMatrix(patch_size*patch_size*3, region_numbers , mxREAL);
 	} else if (!strcmp(model_name, "direction")) {
-		plhs[0] = mxCreateDoubleMatrix(number_of_bins, max_label - min_label + 1 , mxREAL);
+		plhs[0] = mxCreateDoubleMatrix(number_of_bins, region_numbers , mxREAL);
 	}
-	
-	plhs[1] = mxCreateDoubleMatrix(max_label - min_label + 1, 1, mxREAL);
+
+	plhs[1] = mxCreateDoubleMatrix(region_numbers, 1, mxREAL);
 	double *region_feature = (double *)mxGetPr(plhs[0]);
 	double *region_pixels = (double *)mxGetPr(plhs[1]);
+	int *region_got_feature = new int[region_numbers];
+	int *region_random_pixel = new int[region_numbers];
 
 	// initial number of pixels of each region, as well as the region feature
-	for ( int i = 0 ; i < (max_label - min_label + 1) ; i ++) {
-		region_pixels[i] = 0;
+	memset(region_pixels, 0, (region_numbers)*sizeof(double));
+	for ( int i = 0 ; i < M*N ; i ++) {
+		*(region_pixels+(int)(masks[i])-min_label) += 1;
 	}
-	
+	srand( (unsigned)clock() );
+
+	for ( int i = 0 ; i < region_numbers ; i ++) {
+		*(region_random_pixel+i) = rand()%(int)(region_pixels[i]);
+	}
+	memset(region_got_feature, 0, (max_label-min_label+1)*sizeof(int));
 	double *new_image = expandImage(image_full, M, N, channels, patch_size);
 
 
@@ -83,14 +91,14 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 			region_pixels[pixel_label] ++;
 		}
 	}
-	pixels_feature = new double *[max_label - min_label + 1];
-	for ( int i = 0; i < max_label - min_label + 1 ; i++ ) {
+	pixels_feature = new double *[region_numbers];
+	for ( int i = 0; i < region_numbers ; i++ ) {
 		pixels_feature[i] = new double [patch_size*patch_size*region_pixels[i]];
 	}
-	int *region_pixels_count = new int[max_label - min_label + 1 ];
+	int *region_pixels_count = new int[region_numbers ];
 
 	// initial number of pixels of each region, as well as the region feature
-	for ( int i = 0 ; i < (max_label - min_label + 1) ; i ++) {
+	for ( int i = 0 ; i < (region_numbers) ; i ++) {
 		region_pixels_count[i] = 0;
 	}
 	for ( int i = 0 ; i< M ; i +=patch_size) {
@@ -109,7 +117,7 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 			region_pixels_count[pixel_label]++;
 		}
 	}
-	for ( int i = 0 ; i<(max_label - min_label + 1); i ++ ) {
+	for ( int i = 0 ; i<(region_numbers); i ++ ) {
 		if ( region_pixels_count [i] == 0 ) {
 			for ( int j = 0 ; j < M ; j ++) {
 				for ( int k = 0 ;  k < N ; k ++) {
@@ -135,134 +143,73 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 	}
 	KMeans* kmeans = new KMeans(kmeans_dim,kmeans_cluster_num);
 	kmeans->SetInitMode(KMeans::InitUniform);
-//#pragma omp parallel for
-	for ( int i = 0  ; i < (max_label - min_label + 1) ; i ++) {
+	//#pragma omp parallel for
+	for ( int i = 0  ; i < (region_numbers) ; i ++) {
 		kmeans_size = region_pixels_count[i];
 		kmeans->Cluster(pixels_feature[i],kmeans_size,region_feature+i*patch_size*patch_size);
 	}
-	for ( int i = 0; i < max_label - min_label + 1 ; i++ ) {
+	for ( int i = 0; i < region_numbers ; i++ ) {
 		delete [] pixels_feature[i] ;
 	}
 	delete[] pixels_feature;
 	delete[] region_pixels_count;
 #else
 	
-	for ( int i = 0 ; i < (max_label - min_label + 1) ; i ++) {
-		region_pixels[i] = 0;
-	}
+	memset(region_pixels, 0, (region_numbers)*sizeof(double));
 
 	//
 	if (!strcmp(model_name, "gray") || !strcmp(model_name, "magnitude")) {
-		for ( int i = 0 ; i < (patch_size*patch_size)*(max_label - min_label + 1) ; i ++) {
-			region_feature[i] = 0;
-		}
-		for ( int i = 0 ; i< M ; i +=patch_size) {
-			for (int j = 0; j < N; j+=patch_size) {
+		memset(region_feature, 0, (patch_size*patch_size)*(region_numbers)*sizeof(double));
+		
+		for ( int i = 0 ; i< M ; i ++) {
+			for (int j = 0; j < N; j++) {
 				pixel_label = *(masks + j * M + i)-min_label ;
 				int k = 0 ;
-				for (int k1 = 0; k1 < patch_size; k1++) {
-					for ( int k2 = 0 ; k2 < patch_size ; k2 ++) {
-						region_feature[pixel_label*patch_size*patch_size+k] += 
-							new_image[(i+k2)*(N+patch_size-1)+j+k1];
-						k ++;
+				if ( region_got_feature[pixel_label] == region_random_pixel[pixel_label] ) {
+					for (int k1 = 0; k1 < patch_size; k1++) {
+						for ( int k2 = 0 ; k2 < patch_size ; k2 ++) {
+							region_feature[pixel_label*patch_size*patch_size+k] += 
+								new_image[(i+k2)*(N+patch_size-1)+j+k1];
+							k ++;
+						}
 					}
 				}
-				region_pixels[pixel_label]++;
+				region_got_feature[pixel_label] ++ ;
 			}
 		}
 
-		int noMeanCount = 0;
-		int kk, centerx, centery;
-		for ( int j = 0 ; j < M ; j ++) {
-			for ( int k = 0 ;  k < N ; k ++) {
-				pixel_label = *(masks + k * M + j)-min_label ;
-				if ( region_pixels [pixel_label] == 0) {
-					region_pixels[pixel_label]++;
-					noMeanCount++;
-					kk = 0 ;
-					centerx = centers[pixel_label];
-					centery = centers[regionNumbers+pixel_label];
-					//printf("centers: %d, %d\n", centerx, centery);
-					for (int k1 = 0; k1 < patch_size; k1++) {
-						for ( int k2 = 0 ; k2 < patch_size ; k2 ++) {
-							region_feature[pixel_label*patch_size*patch_size+kk] += 
-								new_image[(centerx+k2)*(N+patch_size-1)+centery+k1];
-							kk ++;
-						}
-					}
-				}
-			}
-		}
-		printf("number of regions without centre: %d\n", noMeanCount);
-		for ( int i = 0 ; i<(max_label - min_label + 1); i ++ ) {
-			for ( int j = 0 ; j < patch_size*patch_size ; j ++) {
-				//if (region_pixels[i]==0) {
-				//	printf("%d ", i);
-				//}
-				region_feature[i*patch_size*patch_size+j] /= region_pixels[i];
-			}
-		}
 	} else if ( !strcmp(model_name, "RGB") || !strcmp(model_name, "rgb") ) {
-		for ( int i = 0 ; i < (patch_size*patch_size*3)*(max_label - min_label + 1) ; i ++) {
-			region_feature[i] = 0;
-		}
 		int region_height = patch_size * patch_size * 3;
 		int image_step = (M+patch_size-1)*(N+patch_size-1);
-		for ( int i = 0 ; i< M ; i +=patch_size) {
-			for (int j = 0; j < N; j+=patch_size) {
+		memset(region_feature, 0, (patch_size*patch_size)*(region_numbers)*sizeof(double));
+
+		for ( int i = 0 ; i< M ; i ++) {
+			for (int j = 0; j < N; j++) {
 				pixel_label = *(masks + j * M + i)-min_label ;
 				int k = 0 ;
-				for (int k1 = 0; k1 < patch_size; k1++) {
-					for ( int k2 = 0 ; k2 < patch_size ; k2 ++) {
-						region_feature[pixel_label*region_height+k] += 
-							new_image[(i+k2)*(N+patch_size-1)+j+k1];
-						region_feature[pixel_label*region_height+patch_size*patch_size+k] += 
-							new_image[image_step+(i+k2)*(N+patch_size-1)+j+k1];
-						region_feature[pixel_label*region_height+patch_size*patch_size*2+k] += 
-							new_image[image_step*2+(i+k2)*(N+patch_size-1)+j+k1];
-						k ++;
-					}
-				}
-				region_pixels[pixel_label]++;
-			}
-		}
-		for ( int j = 0 ; j < M ; j ++) {
-			for ( int k = 0 ;  k < N ; k ++) {
-				pixel_label = *(masks + k * M + j)-min_label ;
-				if ( region_pixels [pixel_label] == 0) {
-					region_pixels[pixel_label]++;
-					int kk = 0 ;
-					int centerx = centers[(max_label - min_label + 1)*pixel_label],
-						centery = centers[(max_label - min_label + 1)*(pixel_label+1)];
+				if ( region_got_feature[pixel_label] == region_random_pixel[pixel_label] ) {
 					for (int k1 = 0; k1 < patch_size; k1++) {
 						for ( int k2 = 0 ; k2 < patch_size ; k2 ++) {
-							region_feature[pixel_label*region_height+patch_size*patch_size+kk] += 
-								new_image[(centerx+k2)*(N+patch_size-1)+centery+k1];
-							region_feature[pixel_label*region_height+patch_size*patch_size+kk] += 
-								new_image[image_step+(centerx+k2)*(N+patch_size-1)+centery+k1];
-							region_feature[pixel_label*region_height+patch_size*patch_size+kk] += 
-								new_image[image_step*2+(centerx+k2)*(N+patch_size-1)+centery+k1];
-							kk ++;
+							region_feature[pixel_label*region_height+k] += 
+								new_image[(i+k2)*(N+patch_size-1)+j+k1];
+							region_feature[pixel_label*region_height+patch_size*patch_size+k] += 
+								new_image[image_step+(i+k2)*(N+patch_size-1)+j+k1];
+							region_feature[pixel_label*region_height+patch_size*patch_size*2+k] += 
+								new_image[image_step*2+(i+k2)*(N+patch_size-1)+j+k1];
+							k ++;
 						}
 					}
 				}
+				region_got_feature[pixel_label] ++ ;
 			}
 		}
-		
-		for ( int i = 0 ; i<(max_label - min_label + 1); i ++ ) {
-			for ( int j = 0 ; j < region_height ; j ++) {
-				//if (region_pixels[i]==0) {
-				//	printf("%d ", i);
-				//}
-				region_feature[i*patch_size*patch_size+j] /= region_pixels[i];
-			}
-		}
+
 	} else if (!strcmp(model_name, "direction")) {
 		double angle_width = 360.0/number_of_bins;
 		double dirc;
 		int belong_bin;
 		int region_height = number_of_bins;
-		for ( int i = 0 ; i < number_of_bins*(max_label - min_label + 1) ; i ++) {
+		for ( int i = 0 ; i < number_of_bins*(region_numbers) ; i ++) {
 			region_feature[i] = 0;
 		}
 		for ( int i = 0 ; i < M ; i ++) {
@@ -274,7 +221,7 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 				region_pixels[pixel_label]++;
 			}
 		}
-		for ( int i = 0 ; i<(max_label - min_label + 1); i ++ ) {
+		for ( int i = 0 ; i<(region_numbers); i ++ ) {
 			for ( int j = 0 ; j < region_height; j ++) {
 				//if (region_pixels[i]==0) {
 				//	printf("%d ", i);
@@ -283,7 +230,7 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 			}
 		}
 	} else if ( !strcmp(model_name, "append") ){
-		for ( int i = 0 ; i < (patch_size*patch_size+number_of_bins)*(max_label - min_label + 1) ; i ++) {
+		for ( int i = 0 ; i < (patch_size*patch_size+number_of_bins)*(region_numbers) ; i ++) {
 			region_feature[i] = 0;
 		}
 		for ( int i = 0 ; i< M ; i +=patch_size) {
@@ -316,7 +263,7 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 				}
 			}
 		}
-		for ( int i = 0 ; i<(max_label - min_label + 1); i ++ ) {
+		for ( int i = 0 ; i<(region_numbers); i ++ ) {
 			for ( int j = 0 ; j < patch_size*patch_size ; j ++) {
 				//if (region_pixels[i]==0) {
 				//	printf("%d ", i);
@@ -324,7 +271,7 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 				region_feature[i*(patch_size*patch_size+number_of_bins)+j] /= region_pixels[i];
 			}
 		}
-		for ( int i = 0 ; i < (max_label - min_label + 1) ; i ++) {
+		for ( int i = 0 ; i < (region_numbers) ; i ++) {
 			region_pixels[i] = 0;
 		}
 		double angle_width = 360.0/number_of_bins;
@@ -340,7 +287,7 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 				region_pixels[pixel_label]++;
 			}
 		}
-		for ( int i = 0 ; i<(max_label - min_label + 1); i ++ ) {
+		for ( int i = 0 ; i<(region_numbers); i ++ ) {
 			for ( int j = patch_size*patch_size ; j < patch_size*patch_size +number_of_bins; j ++) {
 				//if (region_pixels[i]==0) {
 				//	printf("%d ", i);
@@ -349,9 +296,9 @@ void mexFunction ( int nlhs, mxArray *plhs[], int nrhs, const mxArray *prhs[] )
 			}
 		}
 	}
-	
+
 #endif // KMEANS
-	
+
 	delete[] new_image;
 }
 
@@ -366,7 +313,7 @@ T *expandImage(T *image, int m, int n,int channels, int patch_size) {
 	for ( int channeli = 0 ; channeli < channels ; channeli++) {
 		int channel_step = channeli*m*n;
 		int new_channel_step = channeli*(m+patch_size-1)*(n+patch_size-1);
-		
+
 		//copy the middle part to new image
 		for ( i = 0 ; i < m ; i ++) {
 			for ( j = 0 ; j < n; j ++) {
@@ -402,6 +349,6 @@ T *expandImage(T *image, int m, int n,int channels, int patch_size) {
 			}
 		}
 	}
-	
+
 	return newImage ;
 }
